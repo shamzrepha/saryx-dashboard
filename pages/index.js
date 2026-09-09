@@ -2,16 +2,16 @@ import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { ref, onValue, set } from "firebase/database";
 import { rtdb } from "../lib/firebase";
-import { useRobotStream } from "../lib/useRobotStream";
 
 // Leaflet needs the window object, so load the map client-side only
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
 export default function Dashboard() {
-  const { videoRef, status } = useRobotStream();
   const [telemetry, setTelemetry] = useState(null);
   const [position, setPosition] = useState(null);
   const [mode, setMode] = useState("manual"); // "manual" | "training" | "autonomous"
+  const [streamServerUrl, setStreamServerUrl] = useState(null);
+  const [streamKey, setStreamKey] = useState(0); // bump to force <img> reload if it stalls
 
   useEffect(() => {
     const unsubTelemetry = onValue(ref(rtdb, "robot/telemetry"), (snap) => {
@@ -20,9 +20,13 @@ export default function Dashboard() {
     const unsubPosition = onValue(ref(rtdb, "robot/position"), (snap) => {
       setPosition(snap.val());
     });
+    const unsubStreamUrl = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => {
+      setStreamServerUrl(snap.val());
+    });
     return () => {
       unsubTelemetry();
       unsubPosition();
+      unsubStreamUrl();
     };
   }, []);
 
@@ -68,20 +72,32 @@ export default function Dashboard() {
     set(ref(rtdb, "robot/recording"), { active: false });
   };
 
+  const streamSrc = streamServerUrl ? `${streamServerUrl}/stream?k=${streamKey}` : null;
+
   return (
     <div style={{ fontFamily: "sans-serif", background: "#111", color: "#eee", minHeight: "100vh", padding: "16px" }}>
       <h1 style={{ marginTop: 0 }}>SARYX Dashboard</h1>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
-          <h3>Live Stream <span style={{ fontSize: 12, opacity: 0.7 }}>({status})</span></h3>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{ width: "100%", background: "#000", borderRadius: 8 }}
-          />
+          <h3>
+            Live Stream{" "}
+            <span style={{ fontSize: 12, opacity: 0.7 }}>
+              {streamServerUrl ? `(${streamServerUrl})` : "(no relay server set)"}
+            </span>
+          </h3>
+          {streamSrc ? (
+            <img
+              src={streamSrc}
+              alt="Robot camera feed"
+              style={{ width: "100%", background: "#000", borderRadius: 8, display: "block" }}
+              onError={() => setTimeout(() => setStreamKey((k) => k + 1), 2000)}
+            />
+          ) : (
+            <div style={{ width: "100%", aspectRatio: "4/3", background: "#000", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
+              Waiting for stream server URL (set robot/streamServerUrl in Firebase)
+            </div>
+          )}
         </div>
 
         <div>
