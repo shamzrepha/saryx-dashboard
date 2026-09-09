@@ -1,48 +1,65 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { ref, onValue, set } from "firebase/database";
 import { rtdb } from "../lib/firebase";
 
-// Leaflet needs the window object, so load the map client-side only
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
 export default function Dashboard() {
   const [telemetry, setTelemetry] = useState(null);
   const [position, setPosition] = useState(null);
-  const [mode, setMode] = useState("manual"); // "manual" | "training" | "autonomous"
+  const [trail, setTrail] = useState([]);
+  const [mode, setMode] = useState("manual"); // what THIS browser last requested
+  const [robotConfirmedTraining, setRobotConfirmedTraining] = useState(false); // what the robot actually reports
+  const [robotConfirmedLocked, setRobotConfirmedLocked] = useState(null);
   const [streamServerUrl, setStreamServerUrl] = useState(null);
-  const [streamKey, setStreamKey] = useState(0); // bump to force <img> reload if it stalls
+  const [streamKey, setStreamKey] = useState(0);
+  const lastTrailPoint = useRef(null);
 
   useEffect(() => {
     const unsubTelemetry = onValue(ref(rtdb, "robot/telemetry"), (snap) => {
       setTelemetry(snap.val());
     });
     const unsubPosition = onValue(ref(rtdb, "robot/position"), (snap) => {
-      setPosition(snap.val());
+      const val = snap.val();
+      setPosition(val);
+      if (val?.lat && val?.lon) {
+        const point = [val.lat, val.lon];
+        const last = lastTrailPoint.current;
+        // only add a new trail point if it actually moved a little, so the
+        // trail doesn't fill up with duplicate stationary points
+        if (!last || Math.abs(last[0] - point[0]) > 0.000005 || Math.abs(last[1] - point[1]) > 0.000005) {
+          lastTrailPoint.current = point;
+          setTrail((prev) => [...prev, point].slice(-500)); // cap length
+        }
+      }
     });
     const unsubStreamUrl = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => {
       setStreamServerUrl(snap.val());
+    });
+    const unsubRecording = onValue(ref(rtdb, "robot/recording"), (snap) => {
+      setRobotConfirmedTraining(!!snap.val()?.active);
+    });
+    const unsubLockStatus = onValue(ref(rtdb, "robot/lockStatus"), (snap) => {
+      setRobotConfirmedLocked(snap.val()?.locked);
     });
     return () => {
       unsubTelemetry();
       unsubPosition();
       unsubStreamUrl();
+      unsubRecording();
+      unsubLockStatus();
     };
   }, []);
 
   const sendCommand = useCallback((throttle, steer) => {
-    set(ref(rtdb, "robot/commands"), {
-      throttle,
-      steer,
-      timestamp: Date.now(),
-    });
+    set(ref(rtdb, "robot/commands"), { throttle, steer, timestamp: Date.now() });
   }, []);
 
   const sendLock = useCallback((open) => {
     set(ref(rtdb, "robot/lockCommand"), { open, timestamp: Date.now() });
   }, []);
 
-  // Keyboard controls: arrow keys for manual/training drive
   useEffect(() => {
     const pressed = new Set();
     const compute = () => {
@@ -65,6 +82,8 @@ export default function Dashboard() {
 
   const startTraining = () => {
     setMode("training");
+    setTrail([]); // fresh trail for this training run
+    lastTrailPoint.current = null;
     set(ref(rtdb, "robot/recording"), { active: true, startedAt: Date.now() });
   };
   const stopTraining = () => {
@@ -77,6 +96,21 @@ export default function Dashboard() {
   return (
     <div style={{ fontFamily: "sans-serif", background: "#111", color: "#eee", minHeight: "100vh", padding: "16px" }}>
       <h1 style={{ marginTop: 0 }}>SARYX Dashboard</h1>
+
+      <div style={{
+        display: "inline-block", padding: "6px 14px", borderRadius: 6, marginBottom: 16,
+        background: robotConfirmedTraining ? "#FFA726" : "#2E7D32", color: "#111", fontWeight: "bold"
+      }}>
+        Robot confirms: {robotConfirmedTraining ? "TRAINING (recording route)" : "MANUAL"}
+      </div>
+      {robotConfirmedLocked !== null && (
+        <div style={{
+          display: "inline-block", padding: "6px 14px", borderRadius: 6, marginBottom: 16, marginLeft: 8,
+          background: robotConfirmedLocked ? "#D32F2F" : "#2E7D32", color: "#fff", fontWeight: "bold"
+        }}>
+          Cart: {robotConfirmedLocked ? "LOCKED" : "UNLOCKED"}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
@@ -101,8 +135,8 @@ export default function Dashboard() {
         </div>
 
         <div>
-          <h3>Live Map</h3>
-          <RobotMap position={position} />
+          <h3>Live Map {trail.length > 1 && <span style={{ fontSize: 12, opacity: 0.7 }}>({trail.length} points on trail)</span>}</h3>
+          <RobotMap position={position} trail={trail} />
         </div>
       </div>
 
@@ -111,7 +145,7 @@ export default function Dashboard() {
           <h3>Manual / Training Control</h3>
           <p style={{ fontSize: 13, opacity: 0.8 }}>
             Use arrow keys to drive. Toggling "Start Training" records this drive
-            as a route while you steer.
+            as a route (and starts a fresh trail on the map) while you steer.
           </p>
           <button onClick={mode === "training" ? stopTraining : startTraining}
             style={{ padding: "10px 16px", marginRight: 8, background: mode === "training" ? "#D32F2F" : "#2E7D32", color: "#fff", border: "none", borderRadius: 6 }}>
