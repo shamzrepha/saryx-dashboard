@@ -3,10 +3,6 @@ import { useEffect } from "react";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-const robotIcon = new L.Icon({
-  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
-  iconSize: [25, 41], iconAnchor: [12, 41],
-});
 const greenIcon = new L.Icon({
   iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png",
   iconSize: [25, 41], iconAnchor: [12, 41],
@@ -15,6 +11,22 @@ const orangeIcon = new L.Icon({
   iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png",
   iconSize: [25, 41], iconAnchor: [12, 41],
 });
+
+// Rotating arrow marker showing which way the robot is actually facing,
+// driven by the compass heading pushed from the phone (robot/position.headingDeg).
+function robotArrowIcon(headingDeg = 0) {
+  const svg = `
+    <svg width="36" height="36" viewBox="0 0 36 36" style="transform: rotate(${headingDeg}deg)">
+      <circle cx="18" cy="18" r="14" fill="#E53935" fill-opacity="0.25" />
+      <polygon points="18,4 26,26 18,20 10,26" fill="#E53935" stroke="#fff" stroke-width="1.5" />
+    </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: "",
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+  });
+}
 
 function FollowRobot({ position, follow }) {
   const map = useMap();
@@ -94,8 +106,8 @@ export default function RobotMap({
         )}
 
         {hasFix && (
-          <Marker position={[position.lat, position.lon]} icon={robotIcon}>
-            <Popup>Robot is here</Popup>
+          <Marker position={[position.lat, position.lon]} icon={robotArrowIcon(position.headingDeg)}>
+            <Popup>Robot is here{position.headingDeg != null ? ` — facing ${Math.round(position.headingDeg)}°` : ""}</Popup>
           </Marker>
         )}
       </MapContainer>

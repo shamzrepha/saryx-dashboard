@@ -71,21 +71,53 @@ export default function Admin() {
     set(ref(rtdb, "robot/lockCommand"), { open, timestamp: Date.now() });
   }, []);
 
+  // Smooth acceleration/deceleration instead of instant on/off - eases the
+  // current throttle/steer toward whatever the held keys target, like a real
+  // gas pedal/brake rather than a binary switch.
   useEffect(() => {
     const pressed = new Set();
-    const compute = () => {
+    let currentThrottle = 0, currentSteer = 0;
+    const ACCEL_STEP = 0.08;  // gradual ramp-up, like easing onto the gas
+    const DECEL_STEP = 0.35;  // fast ramp-down when releasing, like braking -
+                               // matches the BLE-level fix that also prioritizes
+                               // stopping quickly over smoothness
+    const TICK_MS = 50;
+
+    const targetValues = () => {
       let throttle = 0, steer = 0;
       if (pressed.has("ArrowUp")) throttle = 0.6;
       if (pressed.has("ArrowDown")) throttle = -0.6;
       if (pressed.has("ArrowLeft")) steer = -0.6;
       if (pressed.has("ArrowRight")) steer = 0.6;
-      sendCommand(throttle, steer);
+      return { throttle, steer };
     };
-    const down = (e) => { if (e.key.startsWith("Arrow")) { pressed.add(e.key); compute(); } };
-    const up = (e) => { if (e.key.startsWith("Arrow")) { pressed.delete(e.key); compute(); } };
+
+    const ease = (current, target) => {
+      // Moving toward zero (releasing/braking) uses the fast step; moving
+      // away from zero (accelerating) uses the slow, smooth step.
+      const movingTowardZero = Math.abs(target) < Math.abs(current) || target === 0;
+      const step = movingTowardZero ? DECEL_STEP : ACCEL_STEP;
+      if (Math.abs(target - current) < step) return target;
+      return current + Math.sign(target - current) * step;
+    };
+
+    const tick = () => {
+      const { throttle: targetThrottle, steer: targetSteer } = targetValues();
+      currentThrottle = ease(currentThrottle, targetThrottle);
+      currentSteer = ease(currentSteer, targetSteer);
+      sendCommand(currentThrottle, currentSteer);
+    };
+
+    const interval = setInterval(tick, TICK_MS);
+    const down = (e) => { if (e.key.startsWith("Arrow")) pressed.add(e.key); };
+    const up = (e) => { if (e.key.startsWith("Arrow")) pressed.delete(e.key); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
   }, [sendCommand]);
 
   const startTraining = () => {
