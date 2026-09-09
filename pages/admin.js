@@ -6,6 +6,7 @@ import { rtdb } from "../lib/firebase";
 import { watchAllRoutes, watchAllOrders } from "../lib/orders";
 import { createStation, deleteStation, watchAllStations } from "../lib/stations";
 import { FUTO_CENTER } from "../lib/geo";
+import { useMjpegStream } from "../lib/useMjpegStream";
 
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
@@ -17,7 +18,7 @@ export default function Admin() {
   const [robotConfirmedTraining, setRobotConfirmedTraining] = useState(false);
   const [robotConfirmedLocked, setRobotConfirmedLocked] = useState(null);
   const [streamServerUrl, setStreamServerUrl] = useState(null);
-  const [streamKey, setStreamKey] = useState(0);
+  const { imageSrc: mjpegImageSrc, status: mjpegStatus } = useMjpegStream(streamServerUrl);
   const [routes, setRoutes] = useState([]);
   const [orders, setOrders] = useState([]);
   const [stations, setStations] = useState([]);
@@ -146,7 +147,6 @@ export default function Admin() {
     setNewStationName(""); setNewStationPoint(null); setAddingStation(false);
   };
 
-  const streamSrc = streamServerUrl ? `${streamServerUrl}/stream?k=${streamKey}` : null;
   const unmatchedOrders = orders.filter((o) => o.status === "unmatched" || o.status === "pending");
   const pendingPoints = unmatchedOrders.map((o) => ({ lat: o.pickupLat, lon: o.pickupLon, label: `Order ${o.id} (${o.status})` }));
   const mapFocus = focusedOrder ? { lat: focusedOrder.pickupLat, lon: focusedOrder.pickupLon } : null;
@@ -186,10 +186,9 @@ export default function Admin() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
-          <h3>Live Stream <span style={{ fontSize: 12, opacity: 0.7 }}>{streamServerUrl ? `(${streamServerUrl})` : "(no relay server set)"}</span></h3>
-          {streamSrc ? (
-            <img src={streamSrc} alt="Robot camera feed" style={{ width: "100%", background: "#000", borderRadius: 8, display: "block" }}
-              onError={() => setTimeout(() => setStreamKey((k) => k + 1), 2000)} />
+          <h3>Live Stream <span style={{ fontSize: 12, opacity: 0.7 }}>{streamServerUrl ? `(${streamServerUrl}) - ${mjpegStatus}` : "(no relay server set)"}</span></h3>
+          {mjpegImageSrc ? (
+            <img src={mjpegImageSrc} alt="Robot camera feed" style={{ width: "100%", background: "#000", borderRadius: 8, display: "block" }} />
           ) : (
             <div style={{ width: "100%", aspectRatio: "4/3", background: "#000", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
               Waiting for stream server URL

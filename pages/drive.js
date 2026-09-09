@@ -3,6 +3,7 @@ import dynamic from "next/dynamic";
 import { ref, onValue, set } from "firebase/database";
 import { rtdb } from "../lib/firebase";
 import Joystick from "../components/Joystick";
+import { useMjpegStream } from "../lib/useMjpegStream";
 
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
@@ -13,7 +14,7 @@ const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false })
 */
 export default function Drive() {
   const [streamServerUrl, setStreamServerUrl] = useState(null);
-  const [streamKey, setStreamKey] = useState(0);
+  const { imageSrc: mjpegImageSrc } = useMjpegStream(streamServerUrl);
   const [position, setPosition] = useState(null);
   const [telemetry, setTelemetry] = useState(null);
   const [lockedStatus, setLockedStatus] = useState(null);
@@ -21,7 +22,7 @@ export default function Drive() {
   const lastSend = useRef({ throttle: 0, steer: 0 });
 
   useEffect(() => {
-    const unsubStream = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => setStreamServerUrl(snap.val()));
+  const unsubStream = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => setStreamServerUrl(snap.val()));
     const unsubPos = onValue(ref(rtdb, "robot/position"), (snap) => setPosition(snap.val()));
     const unsubTelemetry = onValue(ref(rtdb, "robot/telemetry"), (snap) => setTelemetry(snap.val()));
     const unsubLock = onValue(ref(rtdb, "robot/lockStatus"), (snap) => setLockedStatus(snap.val()?.locked));
@@ -45,8 +46,6 @@ export default function Drive() {
 
   const sendLock = (open) => set(ref(rtdb, "robot/lockCommand"), { open, timestamp: Date.now() });
 
-  const streamSrc = streamServerUrl ? `${streamServerUrl}/stream?k=${streamKey}` : null;
-
   if (isPortrait) {
     return (
       <div style={{
@@ -63,9 +62,8 @@ export default function Drive() {
 
   return (
     <div style={{ height: "100vh", width: "100vw", background: "#000", position: "relative", overflow: "hidden" }}>
-      {streamSrc ? (
-        <img src={streamSrc} alt="Live feed" style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          onError={() => setTimeout(() => setStreamKey((k) => k + 1), 2000)} />
+      {mjpegImageSrc ? (
+        <img src={mjpegImageSrc} alt="Live feed" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
           Waiting for stream...
