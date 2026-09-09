@@ -227,6 +227,13 @@ export default function Admin() {
       <div style={{ marginTop: 24, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
           <h3>Manual / Training</h3>
+          <a href="/drive" target="_blank" rel="noopener noreferrer" style={{
+            display: "inline-block", padding: "8px 16px", marginBottom: 12, background: "#1565C0",
+            color: "#fff", borderRadius: 6, textDecoration: "none", fontSize: 13
+          }}>
+            🎮 Open Drive Mode (phone, landscape, joystick) →
+          </a>
+          <br />
           <button onClick={mode === "training" ? stopTraining : startTraining}
             style={{ padding: "10px 16px", marginRight: 8, background: mode === "training" ? "#D32F2F" : "#2E7D32", color: "#fff", border: "none", borderRadius: 6 }}>
             {mode === "training" ? "Stop Training" : "Start Training"}
