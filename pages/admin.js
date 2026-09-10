@@ -6,7 +6,7 @@ import { rtdb } from "../lib/firebase";
 import { watchAllRoutes, watchAllOrders } from "../lib/orders";
 import { createStation, deleteStation, watchAllStations } from "../lib/stations";
 import { FUTO_CENTER } from "../lib/geo";
-import { useMjpegStream } from "../lib/useMjpegStream";
+import { useRobotStream } from "../lib/useRobotStream";
 import { useDriverAuth } from "../lib/useDriverAuth";
 import DriverPinModal from "../components/DriverPinModal";
 
@@ -19,9 +19,7 @@ export default function Admin() {
   const [mode, setMode] = useState("manual");
   const [robotConfirmedTraining, setRobotConfirmedTraining] = useState(false);
   const [robotConfirmedLocked, setRobotConfirmedLocked] = useState(null);
-  const [streamServerUrl, setStreamServerUrl] = useState(null);
-  const { imageSrc: mjpegImageSrc, status: mjpegStatus } = useMjpegStream(streamServerUrl);
-  const [viewerCount, setViewerCount] = useState(1);
+  const { videoRef, status: webrtcStatus } = useRobotStream();
   const [routes, setRoutes] = useState([]);
   const [orders, setOrders] = useState([]);
   const [stations, setStations] = useState([]);
@@ -61,23 +59,18 @@ export default function Admin() {
         }
       }
     });
-    const unsubStreamUrl = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => setStreamServerUrl(snap.val()));
     const unsubRecording = onValue(ref(rtdb, "robot/recording"), (snap) => setRobotConfirmedTraining(!!snap.val()?.active));
     const unsubLockStatus = onValue(ref(rtdb, "robot/lockStatus"), (snap) => setRobotConfirmedLocked(snap.val()?.locked));
     const unsubAutoStatus = onValue(ref(rtdb, "robot/autonomousStatus"), (snap) => setAutonomousStatus(snap.val()));
     const unsubActiveOrder = onValue(ref(rtdb, "robot/activeOrder"), (snap) => setActiveOrder(snap.val()));
     const unsubOverride = onValue(ref(rtdb, "robot/autonomousOverride"), (snap) => setOverrideActive(!!snap.val()));
-    const unsubViewers = onValue(ref(rtdb, "robot/viewers"), (snap) => {
-      const val = snap.val();
-      if (typeof val === "number") setViewerCount(val);
-    });
     const unsubRoutes = watchAllRoutes(setRoutes);
     const unsubOrders = watchAllOrders(setOrders);
     const unsubStations = watchAllStations(setStations);
     return () => {
-      unsubTelemetry(); unsubPosition(); unsubStreamUrl(); unsubRecording();
+      unsubTelemetry(); unsubPosition(); unsubRecording();
       unsubLockStatus(); unsubAutoStatus(); unsubActiveOrder(); unsubOverride();
-      unsubViewers(); unsubRoutes(); unsubOrders(); unsubStations();
+      unsubRoutes(); unsubOrders(); unsubStations();
     };
   }, []);
 
@@ -269,7 +262,7 @@ export default function Admin() {
             <h3 style={{ margin: 0 }}>Live Stream</h3>
             <span
               style={{
-                background: "#D32F2F",
+                background: webrtcStatus === "connected" ? "#2E7D32" : "#D32F2F",
                 color: "#fff",
                 fontSize: 11,
                 fontWeight: 700,
@@ -281,19 +274,38 @@ export default function Admin() {
               }}
             >
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />
-              LIVE • {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
-            </span>
-            <span style={{ fontSize: 12, opacity: 0.7 }}>
-              {streamServerUrl ? `(${streamServerUrl}) - ${mjpegStatus}` : "(no relay server set)"}
+              {webrtcStatus === "connected" ? "LIVE (WebRTC)" : webrtcStatus.toUpperCase()}
             </span>
           </div>
-          {mjpegImageSrc ? (
-            <img src={mjpegImageSrc} alt="Robot camera feed" style={{ width: "100%", background: "#000", borderRadius: 8, display: "block" }} />
-          ) : (
-            <div style={{ width: "100%", aspectRatio: "4/3", background: "#000", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
-              Waiting for stream server URL
-            </div>
-          )}
+
+          <div style={{ width: "100%", aspectRatio: "4/3", background: "#000", borderRadius: 8, overflow: "hidden", position: "relative" }}>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            />
+            {webrtcStatus !== "connected" && (
+              <div style={{
+                position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                background: "rgba(0,0,0,0.8)", color: "#aaa", fontSize: 13, gap: 8, padding: 16, textAlign: "center"
+              }}>
+                <span style={{ fontSize: 24 }}>📹</span>
+                <span>
+                  {webrtcStatus === "connecting" && "Connecting to robot stream (WebRTC)..."}
+                  {webrtcStatus === "waiting-for-robot" && "Waiting for robot stream..."}
+                  {webrtcStatus === "connection-lost" && "Connection lost — retrying..."}
+                  {webrtcStatus === "connection-timeout" && "Connection timed out — retrying..."}
+                  {webrtcStatus === "error" && "Stream error — retrying..."}
+                </span>
+                <span style={{ fontSize: 11, opacity: 0.5 }}>
+                  Direct WebRTC • No laptop server or tunnels required
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div>

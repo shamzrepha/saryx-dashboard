@@ -3,24 +3,22 @@ import dynamic from "next/dynamic";
 import { ref, onValue, set } from "firebase/database";
 import { rtdb } from "../lib/firebase";
 import Joystick from "../components/Joystick";
-import { useMjpegStream } from "../lib/useMjpegStream";
+import { useRobotStream } from "../lib/useRobotStream";
 import { useDriverAuth } from "../lib/useDriverAuth";
 import DriverPinModal from "../components/DriverPinModal";
 
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
 /*
-  Full-screen, landscape-first driving screen - meant to be opened on a phone
-  and held sideways, like a live-feed driving game: video fills the screen,
-  a small map overlay shows position/heading, and a touch joystick drives.
+  Full-screen, landscape-first driving screen:
+  Uses direct WebRTC peer-to-peer streaming (<100ms latency worldwide),
+  with virtual joystick, mini-map, and driver PIN protection.
 */
 export default function Drive() {
-  const [streamServerUrl, setStreamServerUrl] = useState(null);
-  const { imageSrc: mjpegImageSrc } = useMjpegStream(streamServerUrl);
+  const { videoRef, status: webrtcStatus } = useRobotStream();
   const [position, setPosition] = useState(null);
   const [telemetry, setTelemetry] = useState(null);
   const [lockedStatus, setLockedStatus] = useState(null);
-  const [viewerCount, setViewerCount] = useState(1);
   const [isPortrait, setIsPortrait] = useState(false);
   const lastSend = useRef({ throttle: 0, steer: 0 });
 
@@ -34,16 +32,11 @@ export default function Drive() {
   } = useDriverAuth();
 
   useEffect(() => {
-    const unsubStream = onValue(ref(rtdb, "robot/streamServerUrl"), (snap) => setStreamServerUrl(snap.val()));
     const unsubPos = onValue(ref(rtdb, "robot/position"), (snap) => setPosition(snap.val()));
     const unsubTelemetry = onValue(ref(rtdb, "robot/telemetry"), (snap) => setTelemetry(snap.val()));
     const unsubLock = onValue(ref(rtdb, "robot/lockStatus"), (snap) => setLockedStatus(snap.val()?.locked));
-    const unsubViewers = onValue(ref(rtdb, "robot/viewers"), (snap) => {
-      const val = snap.val();
-      if (typeof val === "number") setViewerCount(val);
-    });
 
-    return () => { unsubStream(); unsubPos(); unsubTelemetry(); unsubLock(); unsubViewers(); };
+    return () => { unsubPos(); unsubTelemetry(); unsubLock(); };
   }, []);
 
   useEffect(() => {
@@ -58,9 +51,6 @@ export default function Drive() {
       setShowPinModal(true);
       return;
     }
-    // Send on every real change, uncapped rate - the joystick itself already
-    // only fires on actual pointer movement, and the phone-side BLE layer
-    // handles its own send-rate limiting (with stop commands bypassing it).
     lastSend.current = { throttle, steer };
     set(ref(rtdb, "robot/commands"), { throttle, steer, timestamp: Date.now() });
   }, [isAuthorized, setShowPinModal]);
@@ -89,11 +79,47 @@ export default function Drive() {
 
   return (
     <div style={{ height: "100vh", width: "100vw", background: "#000", position: "relative", overflow: "hidden" }}>
-      {mjpegImageSrc ? (
-        <img src={mjpegImageSrc} alt="Live feed" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : (
-        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
-          Waiting for stream...
+      {/* Instantaneous Direct WebRTC Video */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          display: "block",
+          background: "#000",
+        }}
+      />
+
+      {webrtcStatus !== "connected" && (
+        <div style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#aaa",
+          background: "rgba(0,0,0,0.8)",
+          gap: 12,
+        }}>
+          <div style={{ fontSize: 32 }}>📹</div>
+          <div style={{ fontSize: 16, fontWeight: 500 }}>
+            {webrtcStatus === "connecting" && "Connecting to robot stream (WebRTC)..."}
+            {webrtcStatus === "waiting-for-robot" && "Waiting for robot stream..."}
+            {webrtcStatus === "connection-lost" && "Connection lost — reconnecting..."}
+            {webrtcStatus === "connection-timeout" && "Connecting timed out — retrying..."}
+            {webrtcStatus === "error" && "Stream error — reconnecting..."}
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.6 }}>
+            Direct Peer-to-Peer • No servers or tunnels needed
+          </div>
         </div>
       )}
 
@@ -102,17 +128,16 @@ export default function Drive() {
         <RobotMap position={position} />
       </div>
 
-      {/* Telemetry strip & Live viewer count, top-left */}
+      {/* Telemetry & WebRTC Status, top-left */}
       <div style={{ position: "absolute", top: 12, left: 12, display: "flex", gap: 8, alignItems: "center" }}>
         <div style={{ background: "rgba(0,0,0,0.6)", padding: "6px 12px", borderRadius: 6, color: "#fff", fontSize: 12, backdropFilter: "blur(4px)" }}>
           {telemetry ? `Dist: ${telemetry.ultrasonicCm >= 0 ? telemetry.ultrasonicCm.toFixed(0) : "--"}cm${telemetry.bump ? " ⚠️" : ""}` : "No telemetry"}
         </div>
 
-        {/* Live Viewer Counter */}
+        {/* WebRTC Live Indicator */}
         <div
-          title="Number of active stream viewers"
           style={{
-            background: "rgba(211, 47, 47, 0.85)",
+            background: webrtcStatus === "connected" ? "rgba(46, 125, 50, 0.85)" : "rgba(211, 47, 47, 0.85)",
             padding: "6px 12px",
             borderRadius: 6,
             color: "#fff",
@@ -125,7 +150,7 @@ export default function Drive() {
           }}
         >
           <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#fff", animation: "pulse 1.5s infinite" }} />
-          LIVE • {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+          {webrtcStatus === "connected" ? "LIVE (WebRTC)" : webrtcStatus.toUpperCase()}
         </div>
       </div>
 
