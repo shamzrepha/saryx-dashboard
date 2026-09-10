@@ -7,6 +7,8 @@ import { watchAllRoutes, watchAllOrders } from "../lib/orders";
 import { createStation, deleteStation, watchAllStations } from "../lib/stations";
 import { FUTO_CENTER } from "../lib/geo";
 import { useMjpegStream } from "../lib/useMjpegStream";
+import { useDriverAuth } from "../lib/useDriverAuth";
+import DriverPinModal from "../components/DriverPinModal";
 
 const RobotMap = dynamic(() => import("../components/RobotMap"), { ssr: false });
 
@@ -19,6 +21,7 @@ export default function Admin() {
   const [robotConfirmedLocked, setRobotConfirmedLocked] = useState(null);
   const [streamServerUrl, setStreamServerUrl] = useState(null);
   const { imageSrc: mjpegImageSrc, status: mjpegStatus } = useMjpegStream(streamServerUrl);
+  const [viewerCount, setViewerCount] = useState(1);
   const [routes, setRoutes] = useState([]);
   const [orders, setOrders] = useState([]);
   const [stations, setStations] = useState([]);
@@ -34,6 +37,15 @@ export default function Admin() {
   const [newStationPoint, setNewStationPoint] = useState(null);
 
   const lastTrailPoint = useRef(null);
+
+  const {
+    isAuthorized,
+    showPinModal,
+    setShowPinModal,
+    loginWithPin,
+    logoutPin,
+    fixedPin,
+  } = useDriverAuth();
 
   useEffect(() => {
     const unsubTelemetry = onValue(ref(rtdb, "robot/telemetry"), (snap) => setTelemetry(snap.val()));
@@ -55,22 +67,32 @@ export default function Admin() {
     const unsubAutoStatus = onValue(ref(rtdb, "robot/autonomousStatus"), (snap) => setAutonomousStatus(snap.val()));
     const unsubActiveOrder = onValue(ref(rtdb, "robot/activeOrder"), (snap) => setActiveOrder(snap.val()));
     const unsubOverride = onValue(ref(rtdb, "robot/autonomousOverride"), (snap) => setOverrideActive(!!snap.val()));
+    const unsubViewers = onValue(ref(rtdb, "robot/viewers"), (snap) => {
+      const val = snap.val();
+      if (typeof val === "number") setViewerCount(val);
+    });
     const unsubRoutes = watchAllRoutes(setRoutes);
     const unsubOrders = watchAllOrders(setOrders);
     const unsubStations = watchAllStations(setStations);
     return () => {
       unsubTelemetry(); unsubPosition(); unsubStreamUrl(); unsubRecording();
       unsubLockStatus(); unsubAutoStatus(); unsubActiveOrder(); unsubOverride();
-      unsubRoutes(); unsubOrders(); unsubStations();
+      unsubViewers(); unsubRoutes(); unsubOrders(); unsubStations();
     };
   }, []);
 
   const sendCommand = useCallback((throttle, steer) => {
+    if (!isAuthorized) return;
     set(ref(rtdb, "robot/commands"), { throttle, steer, timestamp: Date.now() });
-  }, []);
+  }, [isAuthorized]);
+
   const sendLock = useCallback((open) => {
+    if (!isAuthorized) {
+      setShowPinModal(true);
+      return;
+    }
     set(ref(rtdb, "robot/lockCommand"), { open, timestamp: Date.now() });
-  }, []);
+  }, [isAuthorized, setShowPinModal]);
 
   // Smooth acceleration/deceleration instead of instant on/off - eases the
   // current throttle/steer toward whatever the held keys target, like a real
@@ -78,10 +100,8 @@ export default function Admin() {
   useEffect(() => {
     const pressed = new Set();
     let currentThrottle = 0, currentSteer = 0;
-    const ACCEL_STEP = 0.08;  // gradual ramp-up, like easing onto the gas
-    const DECEL_STEP = 0.35;  // fast ramp-down when releasing, like braking -
-                               // matches the BLE-level fix that also prioritizes
-                               // stopping quickly over smoothness
+    const ACCEL_STEP = 0.08;
+    const DECEL_STEP = 0.35;
     const TICK_MS = 50;
 
     const targetValues = () => {
@@ -94,8 +114,6 @@ export default function Admin() {
     };
 
     const ease = (current, target) => {
-      // Moving toward zero (releasing/braking) uses the fast step; moving
-      // away from zero (accelerating) uses the slow, smooth step.
       const movingTowardZero = Math.abs(target) < Math.abs(current) || target === 0;
       const step = movingTowardZero ? DECEL_STEP : ACCEL_STEP;
       if (Math.abs(target - current) < step) return target;
@@ -103,6 +121,7 @@ export default function Admin() {
     };
 
     const tick = () => {
+      if (!isAuthorized) return;
       const { throttle: targetThrottle, steer: targetSteer } = targetValues();
       currentThrottle = ease(currentThrottle, targetThrottle);
       currentSteer = ease(currentSteer, targetSteer);
@@ -110,7 +129,15 @@ export default function Admin() {
     };
 
     const interval = setInterval(tick, TICK_MS);
-    const down = (e) => { if (e.key.startsWith("Arrow")) pressed.add(e.key); };
+    const down = (e) => {
+      if (e.key.startsWith("Arrow")) {
+        if (!isAuthorized) {
+          setShowPinModal(true);
+          return;
+        }
+        pressed.add(e.key);
+      }
+    };
     const up = (e) => { if (e.key.startsWith("Arrow")) pressed.delete(e.key); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
@@ -119,23 +146,32 @@ export default function Admin() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [sendCommand]);
+  }, [sendCommand, isAuthorized, setShowPinModal]);
 
   const startTraining = () => {
+    if (!isAuthorized) { setShowPinModal(true); return; }
     setMode("training"); setTrail([]); lastTrailPoint.current = null;
     set(ref(rtdb, "robot/recording"), { active: true, startedAt: Date.now() });
   };
   const stopTraining = () => {
+    if (!isAuthorized) { setShowPinModal(true); return; }
     setMode("manual");
     set(ref(rtdb, "robot/recording"), { active: false });
   };
 
   const startAutonomous = (routeName) => {
+    if (!isAuthorized) { setShowPinModal(true); return; }
     set(ref(rtdb, "robot/autonomousOverride"), false);
     set(ref(rtdb, "robot/autonomousTarget"), routeName);
   };
-  const stopAutonomous = () => set(ref(rtdb, "robot/autonomousTarget"), null);
-  const toggleOverride = () => set(ref(rtdb, "robot/autonomousOverride"), !overrideActive);
+  const stopAutonomous = () => {
+    if (!isAuthorized) { setShowPinModal(true); return; }
+    set(ref(rtdb, "robot/autonomousTarget"), null);
+  };
+  const toggleOverride = () => {
+    if (!isAuthorized) { setShowPinModal(true); return; }
+    set(ref(rtdb, "robot/autonomousOverride"), !overrideActive);
+  };
 
   const handleMapClick = (lat, lon) => {
     if (addingStation) setNewStationPoint({ lat, lon });
@@ -158,7 +194,50 @@ export default function Admin() {
         <Link href="/" style={{ color: "#888" }}>← Public site</Link>
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        {/* Driver PIN status badge */}
+        {isAuthorized ? (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 6, background: "#2E7D32", color: "#fff", fontWeight: "bold", fontSize: 13 }}>
+            <span>🟢 Driver: Authorized (PIN: {fixedPin})</span>
+            <button
+              onClick={logoutPin}
+              title="Lock controls"
+              style={{
+                background: "rgba(0,0,0,0.25)",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                padding: "2px 6px",
+                fontSize: 11,
+                cursor: "pointer",
+                marginLeft: 4,
+              }}
+            >
+              Lock
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowPinModal(true)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 14px",
+              borderRadius: 6,
+              background: "#F57C00",
+              color: "#fff",
+              fontWeight: "bold",
+              fontSize: 13,
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            <span>🔒 Spectator Mode</span>
+            <span style={{ textDecoration: "underline", fontSize: 11 }}>(Click to Enter Driver PIN)</span>
+          </button>
+        )}
+
         <Badge color={robotConfirmedTraining ? "#FFA726" : "#2E7D32"}>
           Mode: {autonomousStatus?.active ? "AUTONOMOUS" : robotConfirmedTraining ? "TRAINING" : "MANUAL"}
         </Badge>
@@ -186,7 +265,28 @@ export default function Admin() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
-          <h3>Live Stream <span style={{ fontSize: 12, opacity: 0.7 }}>{streamServerUrl ? `(${streamServerUrl}) - ${mjpegStatus}` : "(no relay server set)"}</span></h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0 }}>Live Stream</h3>
+            <span
+              style={{
+                background: "#D32F2F",
+                color: "#fff",
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "3px 8px",
+                borderRadius: 4,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />
+              LIVE • {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+            </span>
+            <span style={{ fontSize: 12, opacity: 0.7 }}>
+              {streamServerUrl ? `(${streamServerUrl}) - ${mjpegStatus}` : "(no relay server set)"}
+            </span>
+          </div>
           {mjpegImageSrc ? (
             <img src={mjpegImageSrc} alt="Robot camera feed" style={{ width: "100%", background: "#000", borderRadius: 8, display: "block" }} />
           ) : (
@@ -215,8 +315,8 @@ export default function Admin() {
             position={mapFocus ? null : position}
             trail={trail}
             routes={routes}
-            pendingPoints={[...pendingPoints, ...stations.map((s) => ({ lat: s.lat, lon: s.lon, label: `Station: ${s.name}` }))]}
-            pickupMarker={mapFocus}
+            stations={stations}
+            pendingPoints={pendingPoints}
             onMapClick={handleMapClick}
             follow={!mapFocus}
           />
@@ -226,6 +326,40 @@ export default function Admin() {
       <div style={{ marginTop: 24, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div>
           <h3>Manual / Training</h3>
+          {!isAuthorized && (
+            <div
+              style={{
+                background: "rgba(245, 124, 0, 0.15)",
+                border: "1px solid #f57c00",
+                padding: "10px 14px",
+                borderRadius: 8,
+                marginBottom: 12,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span style={{ fontSize: 13, color: "#ffa726" }}>
+                🔒 Driving and lock controls are locked. Spectators can only watch.
+              </span>
+              <button
+                onClick={() => setShowPinModal(true)}
+                style={{
+                  background: "#f57c00",
+                  color: "#fff",
+                  border: "none",
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                Enter PIN (5524)
+              </button>
+            </div>
+          )}
+
           <a href="/drive" target="_blank" rel="noopener noreferrer" style={{
             display: "inline-block", padding: "8px 16px", marginBottom: 12, background: "#1565C0",
             color: "#fff", borderRadius: 6, textDecoration: "none", fontSize: 13
@@ -234,13 +368,17 @@ export default function Admin() {
           </a>
           <br />
           <button onClick={mode === "training" ? stopTraining : startTraining}
-            style={{ padding: "10px 16px", marginRight: 8, background: mode === "training" ? "#D32F2F" : "#2E7D32", color: "#fff", border: "none", borderRadius: 6 }}>
+            style={{ padding: "10px 16px", marginRight: 8, background: mode === "training" ? "#D32F2F" : "#2E7D32", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
             {mode === "training" ? "Stop Training" : "Start Training"}
           </button>
-          <button onClick={() => sendCommand(0, 0)} style={{ padding: "10px 16px", background: "#555", color: "#fff", border: "none", borderRadius: 6 }}>STOP</button>
+          <button onClick={() => sendCommand(0, 0)} style={{ padding: "10px 16px", background: "#555", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>STOP</button>
           <div style={{ marginTop: 12 }}>
-            <button onClick={() => sendLock(true)} style={{ padding: "8px 12px", marginRight: 8 }}>Unlock</button>
-            <button onClick={() => sendLock(false)} style={{ padding: "8px 12px" }}>Lock</button>
+            <button onClick={() => sendLock(true)} style={{ padding: "8px 12px", marginRight: 8, cursor: "pointer" }}>
+              {isAuthorized ? "Unlock Box" : "🔒 Unlock Box (PIN req)"}
+            </button>
+            <button onClick={() => sendLock(false)} style={{ padding: "8px 12px", cursor: "pointer" }}>
+              {isAuthorized ? "Lock Box" : "🔒 Lock Box (PIN req)"}
+            </button>
           </div>
 
           <h3 style={{ marginTop: 24 }}>Autonomous</h3>
@@ -248,20 +386,20 @@ export default function Admin() {
             <div>
               <p>Waypoint {autonomousStatus.currentWaypointIndex + 1} / {autonomousStatus.totalWaypoints}
                 {autonomousStatus.distanceToWaypointMeters >= 0 && ` (${autonomousStatus.distanceToWaypointMeters.toFixed(1)}m away)`}</p>
-              <button onClick={stopAutonomous} style={{ padding: "10px 16px", background: "#D32F2F", color: "#fff", border: "none", borderRadius: 6 }}>Stop Autonomous</button>
+              <button onClick={stopAutonomous} style={{ padding: "10px 16px", background: "#D32F2F", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>Stop Autonomous</button>
             </div>
           ) : (
             <div>
               {routes.length === 0 && <p style={{ opacity: 0.6 }}>No routes trained yet.</p>}
               {routes.map((r) => (
                 <button key={r.name} onClick={() => startAutonomous(r.name)}
-                  style={{ padding: "6px 12px", margin: "0 8px 8px 0", background: "#1565C0", color: "#fff", border: "none", borderRadius: 6 }}>
+                  style={{ padding: "6px 12px", margin: "0 8px 8px 0", background: "#1565C0", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
                   {r.name}
                 </button>
               ))}
             </div>
           )}
-          <button onClick={toggleOverride} style={{ marginTop: 8, padding: "10px 16px", background: overrideActive ? "#555" : "#B71C1C", color: "#fff", border: "none", borderRadius: 6 }}>
+          <button onClick={toggleOverride} style={{ marginTop: 8, padding: "10px 16px", background: overrideActive ? "#555" : "#B71C1C", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
             {overrideActive ? "Clear Override" : "OVERRIDE (force manual now)"}
           </button>
 
@@ -290,6 +428,13 @@ export default function Admin() {
           </ul>
         </div>
       </div>
+
+      {/* Driver PIN modal */}
+      <DriverPinModal
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onUnlock={loginWithPin}
+      />
     </div>
   );
 }
